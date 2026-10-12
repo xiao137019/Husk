@@ -1,0 +1,86 @@
+name: Build Husk (Localized)
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+concurrency:
+  group: husk-build
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Apply Husk localization (v5 全量汉化, 1160 条)
+        run: |
+          cp apply_localization_v5.py apply_localization.py
+          python3 apply_localization.py .
+          grep -c '汉化' apply_localization.py > /tmp/loc_count.txt || true
+      - name: Homebrew update
+        run: brew update
+      - name: Homebrew install (meson, ninja, pkg-config, qemu for qemu-img)
+        run: |
+          brew install meson ninja pkg-config qemu
+          meson --version
+          ninja --version
+          command -v qemu-img && qemu-img --version
+      - name: Set up Rust (aarch64-apple-ios)
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o rustup.sh
+            sh rustup.sh -y --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          rustup target add aarch64-apple-ios
+          rustc --version
+      - name: Sanity check toolchain
+        run: |
+          which python3 pkg-config codesign xcodebuild meson ninja || true
+          python3 --version
+          meson --version
+          ninja --version
+          xcodebuild -version
+          sw_vers
+      - name: Install PyYAML for homebrew python3 (virglrenderer/meson)
+        run: |
+          HPY=/opt/homebrew/bin/python3
+          if [ ! -x "$HPY" ]; then HPY=$(command -v python3); fi
+          "$HPY" -m pip install --break-system-packages pyyaml 2>&1 || \
+            "$HPY" -m pip install --user pyyaml 2>&1 || \
+            "$HPY" -m pip install pyyaml 2>&1
+          "$HPY" -c "import yaml; print('PyYAML OK')"
+      - name: Use virglrenderer-patched build_gpu_ios
+        run: |
+          cp scripts/build_gpu_ios_patched.sh scripts/build_gpu_ios.sh
+          chmod +x scripts/build_gpu_ios.sh
+          grep -n 'llvmpipe_string' scripts/build_gpu_ios.sh | head -3
+      - name: Print Swift/Xcode version (need Swift 6.4 for StikJIT)
+        run: |
+          xcodebuild -version
+          swift --version
+          echo "objectVersion check:"
+          grep 'objectVersion' src/app/Husk.xcodeproj/project.pbxproj
+      - name: Check checked-in Husk.xcodeproj
+        run: |
+          ls -l src/app/Husk.xcodeproj/project.pbxproj || echo "NO checked-in xcodeproj"
+          command -v xcodegen || echo "xcodegen not installed (will use checked-in project)"
+      - name: Build (ci_build.sh -> Husk.ipa + Husk.tipa)
+        run: ./scripts/ci_build.sh build/Husk.ipa
+        env:
+          NONINTERACTIVE: "1"
+      - name: Verify artifacts
+        run: |
+          ls -lh build/Husk.ipa build/Husk.tipa 2>/dev/null || true
+          file build/Husk.ipa build/Husk.tipa
+      - name: Upload IPA + TIPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Husk-localized
+          path: |
+            build/Husk.ipa
+            build/Husk.tipa
+          if-no-files-found: error
+          retention-days: 14
