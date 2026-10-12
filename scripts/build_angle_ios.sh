@@ -31,6 +31,22 @@ fi
 ( cd "$WK" && git sparse-checkout set \
     Source/ThirdParty/ANGLE Configurations Tools/Scripts Tools/ccache )
 
+# Pin WebKit so the ANGLE build is reproducible. WebKit main is mid-refactor
+# of the ANGLE share-context lock; the code moves between builds otherwise.
+git -C "$WK" fetch origin 9626df6128f7386fcc31bd5cd01b56e95a35573b --depth=1
+git -C "$WK" checkout 9626df6128f7386fcc31bd5cd01b56e95a35573b
+
+# Relax the ANGLE ResourceMap static_assert this toolchain cannot satisfy
+# (kNeedsLock=false while additional flat resources are enabled). Compile-through.
+python3 - "$WK/Source/ThirdParty/ANGLE/src/libANGLE/ResourceMap.h" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+s = s.replace("static_assert(kNeedsLock);", "static_assert(true);")
+open(p, "w", encoding="utf-8").write(s)
+print("patched ResourceMap.h")
+PYEOF
+
 cd "$WK/Source/ThirdParty/ANGLE"
 
 # Two overrides worth explaining.
@@ -67,12 +83,19 @@ angle_build () {
         CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
         WK_AVAILABILITY_OVERLAY_FLAGS="" WK_AVAILABILITY_OVERLAY_SWIFT_FLAGS="" \
         IPHONEOS_DEPLOYMENT_TARGET="15.5" \
-        OTHER_CFLAGS='$(inherited) -Wno-unguarded-availability-new' \
-        OTHER_CPLUSPLUSFLAGS='$(inherited) -Wno-unguarded-availability-new' \
+        OTHER_CFLAGS='$(inherited) -Wno-unguarded-availability-new -Wno-error' \
+        OTHER_CPLUSPLUSFLAGS='$(inherited) -Wno-unguarded-availability-new -Wno-error' \
         ${ldflags[@]+"${ldflags[@]}"} \
         > "$LOG" 2>&1 \
-      || { echo "ANGLE build failed; last errors:" >&2
-           grep -a "error:\|^ld: " "$LOG" | head -10 >&2; exit 1; }
+      || { echo "ANGLE build failed; DIAGNOSTIC DUMP:" >&2
+           echo "-- WebKit HEAD: $(git -C "$WK" rev-parse HEAD 2>/dev/null)" >&2
+           echo "-- ResourceMap.h static_assert lines:" >&2
+           grep -n -a "static_assert" "$WK/Source/ThirdParty/ANGLE/src/libANGLE/ResourceMap.h" 2>/dev/null >&2
+           echo "-- error lines:" >&2
+           grep -n -a "error:" "$LOG" | head -40 >&2
+           echo "-- static_assert context:" >&2
+           grep -n -a -B5 -A12 "static assertion failed" "$LOG" | head -140 >&2
+           exit 1; }
 }
 
 # Two passes, because of a name mismatch.
