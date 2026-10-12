@@ -36,6 +36,26 @@ fetch () {
 fetch epoxy https://github.com/utmapp/libepoxy.git   "$EPOXY_COMMIT"
 fetch virgl https://github.com/utmapp/virglrenderer.git "$VIRGL_COMMIT"
 
+# Husk patch: hide the llvmpipe renderer string. vrend_renderer.c declares
+# llvmpipe_string right after the "angle_done:" goto label; iOS clang does not
+# give that label-scoped declaration a usable scope, so the memcpy below fails
+# with "use of undeclared identifier". Wrap it in a block to fix the scope.
+echo "==> patch virglrenderer vrend_renderer.c (llvmpipe_string label scope)"
+python3 - "$GPU/virgl/src/vrend/vrend_renderer.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8", errors="replace").read()
+old = '   char *llvmpipe_string = strstr(caps->v2.renderer, "llvmpipe");\n   if (llvmpipe_string)\n      memcpy(llvmpipe_string, "LLVMPIPE", 8);'
+new = '   { char *llvmpipe_string = strstr(caps->v2.renderer, "llvmpipe");\n     if (llvmpipe_string) memcpy(llvmpipe_string, "LLVMPIPE", 8); }'
+if old not in s:
+    print("WARN: anchor not found, leaving as-is")
+else:
+    s = s.replace(old, new)
+    open(p, "w", encoding="utf-8").write(s)
+    print("patched vrend_renderer.c")
+PYEOF
+
+
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
 echo "==> libepoxy"
